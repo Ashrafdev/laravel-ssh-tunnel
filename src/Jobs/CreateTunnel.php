@@ -23,14 +23,23 @@ class CreateTunnel
 
     public function __construct()
     {
+
         $this->ncCommand = sprintf('%s -z %s %d  > /dev/null 2>&1',
             config('tunneler.nc_path'),
             config('tunneler.local_address'),
             config('tunneler.local_port')
         );
 
-        $this->sshCommand = sprintf('%s -N -i %s -L %d:%s:%d -p %d %s@%s',
+        $this->bashCommand = sprintf('timeout 1 %s -c \'cat < /dev/null > /dev/tcp/%s/%d\' > /dev/null 2>&1',
+            config('tunneler.bash_path'),
+            config('tunneler.local_address'),
+            config('tunneler.local_port')
+        );
+
+        $this->sshCommand = sprintf('%s %s %s -N -i %s -L %d:%s:%d -p %d %s@%s',
             config('tunneler.ssh_path'),
+            config('tunneler.ssh_options'),
+            config('tunneler.ssh_verbosity'),
             config('tunneler.identity_file'),
             config('tunneler.local_port'),
             config('tunneler.bind_address'),
@@ -44,14 +53,20 @@ class CreateTunnel
 
     public function handle(): int
     {
-        if ($this->verifyTunnel()){
+        if ($this->verifyTunnel()) {
             return 1;
         }
 
         $this->createTunnel();
-
-        if ($this->verifyTunnel()){
-            return 2;
+        
+        $tries = config('tunneler.tries');
+        for ($i = 0; $i < $tries; $i++) {
+            if ($this->verifyTunnel()) {
+                return 2;
+            }
+            
+            // Wait a bit until next iteration
+            usleep(config('tunneler.wait'));
         }
 
         throw new \ErrorException(sprintf("Could Not Create SSH Tunnel with command:\n\t%s\nCheck your configuration.",
@@ -64,7 +79,11 @@ class CreateTunnel
      */
     protected function createTunnel()
     {
-        $this->runCommand(sprintf('%s %s > /dev/null &', config('tunneler.nohup_path'), $this->sshCommand));
+        $this->runCommand(sprintf('%s %s >> %s 2>&1 &',
+            config('tunneler.nohup_path'),
+            $this->sshCommand,
+            config('tunneler.nohup_log')
+        ));
         // Ensure we wait long enough for it to actually connect.
         usleep(config('tunneler.wait'));
     }
@@ -75,6 +94,10 @@ class CreateTunnel
      */
     protected function verifyTunnel()
     {
+        if (config('tunneler.verify_process') == 'bash') {
+            return $this->runCommand($this->bashCommand);
+        }
+
         return $this->runCommand($this->ncCommand);
     }
 
